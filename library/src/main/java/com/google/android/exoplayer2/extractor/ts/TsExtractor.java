@@ -64,6 +64,7 @@ public final class TsExtractor implements Extractor {
 
   private static final int TS_STREAM_TYPE_MPA = 0x03;
   private static final int TS_STREAM_TYPE_MPA_LSF = 0x04;
+  private static final int TS_STREAM_TYPE_PRIVATE = 0x06;
   private static final int TS_STREAM_TYPE_AAC = 0x0F;
   private static final int TS_STREAM_TYPE_AC3 = 0x81;
   private static final int TS_STREAM_TYPE_DTS = 0x8A;
@@ -73,6 +74,7 @@ public final class TsExtractor implements Extractor {
   private static final int TS_STREAM_TYPE_H264 = 0x1B;
   private static final int TS_STREAM_TYPE_H265 = 0x24;
   private static final int TS_STREAM_TYPE_ID3 = 0x15;
+  private static final int TS_STREAM_TYPE_DVBSUBS   = 0x59;
   private static final int BASE_EMBEDDED_TRACK_ID = 0x2000; // 0xFF + 1
 
   private static final long AC3_FORMAT_IDENTIFIER = Util.getIntegerCodeForString("AC-3");
@@ -353,6 +355,7 @@ public final class TsExtractor implements Extractor {
     private static final int TS_PMT_DESC_AC3 = 0x6A;
     private static final int TS_PMT_DESC_EAC3 = 0x7A;
     private static final int TS_PMT_DESC_DTS = 0x7B;
+    private static final int TS_PMT_DESC_DVBSUBS = 0x59;
 
     private final ParsableBitArray pmtScratch;
     private final ParsableByteArray sectionData;
@@ -432,7 +435,7 @@ public final class TsExtractor implements Extractor {
         pmtScratch.skipBits(4); // reserved
         int esInfoLength = pmtScratch.readBits(12); // ES_info_length.
         EsInfo esInfo = readEsInfo(sectionData, esInfoLength);
-        if (streamType == 0x06) {
+        if (streamType == TS_STREAM_TYPE_PRIVATE) {
           streamType = esInfo.streamType;
         }
         remainingEntriesLength -= esInfoLength + 5;
@@ -481,6 +484,9 @@ public final class TsExtractor implements Extractor {
               pesPayloadReader = new Id3Reader(output.track(nextEmbeddedTrackId++));
             }
             break;
+          case TS_STREAM_TYPE_DVBSUBS:
+            pesPayloadReader = new DvbSubtitlesReader(output.track(trackId), esInfo.language);
+            break;
           default:
             pesPayloadReader = null;
             break;
@@ -508,7 +514,7 @@ public final class TsExtractor implements Extractor {
     private EsInfo readEsInfo(ParsableByteArray data, int length) {
       int descriptorsEndPosition = data.getPosition() + length;
       int streamType = -1;
-      int audioType = -1;
+      int streamSubType = -1;
       String language = null;
       while (data.getPosition() < descriptorsEndPosition) {
         int descriptorTag = data.readUnsignedByte();
@@ -531,24 +537,29 @@ public final class TsExtractor implements Extractor {
           streamType = TS_STREAM_TYPE_DTS;
         } else if (descriptorTag == TS_PMT_DESC_ISO639_LANG) {
           language = new String(data.data, data.getPosition(), 3).trim();
-          audioType = data.data[data.getPosition() + 3];
+          streamSubType = data.data[data.getPosition() + 3];
+        } else if (descriptorTag == TS_PMT_DESC_DVBSUBS && descriptorLength == 8) { // we only support one subtitle service per PID
+          streamType = TS_STREAM_TYPE_DVBSUBS;
+          language = new String(data.data, data.getPosition(), 3).trim();
+          streamSubType = data.data[data.getPosition() + 3];
+          // We discard all the additional info as is no relevant to the library
         }
         // Skip unused bytes of current descriptor.
         data.skipBytes(positionOfNextDescriptor - data.getPosition());
       }
       data.setPosition(descriptorsEndPosition);
-      return new EsInfo(streamType, audioType, language);
+      return new EsInfo(streamType, streamSubType, language);
     }
 
     private final class EsInfo {
 
       final int streamType;
-      final int audioType;
+      final int streamSubType;
       final String language;
 
-      public EsInfo(int streamType, int audioType, String language) {
+      public EsInfo(int streamType, int streamSubType, String language) {
         this.streamType = streamType;
-        this.audioType = audioType;
+        this.streamSubType = streamSubType;
         this.language = language;
       }
 
